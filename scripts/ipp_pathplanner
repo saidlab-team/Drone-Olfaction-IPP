@@ -1,0 +1,580 @@
+#!/usr/bin/env python
+# coding=utf-8
+
+
+# Drawing Libraries
+import matplotlib
+matplotlib.use('tkagg')
+import matplotlib.pyplot as plt  # In case plot update is too slow, change to pyqtgraph
+from matplotlib import ticker, cm, colors
+# plt.style.use('seaborn-white')
+
+# Kernel and User libraries
+from gdm_pack.td_kernel_dmvw import TDKernelDMVW
+import gdm_pack.ipp_pathplanner_v1 as ipp
+
+from scipy import signal
+from scipy.signal import convolve2d
+
+# Ros related libraries
+import rospy
+from sensor_msgs.msg import Joy
+from std_msgs.msg import Int64, Empty, Float64MultiArray, Float64
+from geometry_msgs.msg import PointStamped
+
+
+
+# Others
+import numpy as np
+
+kernel_pointer = None # To have a reference to the kernel object and being able to save the mission before exiting.
+
+
+# from timeit import default_timer as timer, Timer
+
+
+##############################
+#     Start the Kernel       #
+##############################
+
+def start_kernel(min_x=0., min_y=0., max_x=20., max_y=20., cell_size=0.1, kernel_size=1., wind_scale=0.05, time_scale=0,
+                 confidence_scale=0.1, lccz=True, evaluation_radius=10):
+    # Set starting parameters
+    # min_x = 0
+    # min_y = 0
+    # max_x = 20
+    # max_y = 20
+    # cell_size = 0.1
+    # kernel_size = 10 * cell_size
+    # wind_scale = 0.05
+    # time_scale = 0
+    # evaluation_radius = 10*kernel_size
+
+    # Create dummy measurement vectors
+    positions_x = []
+    positions_y = []
+    concentrations = []
+    wind_directions = []
+    wind_speeds = []
+    timestamps = []
+
+    # call Kernel
+    kernel = TDKernelDMVW(min_x, min_y, max_x, max_y, cell_size, kernel_size, wind_scale, time_scale, confidence_scale,
+                          low_confidence_calculation_zero=lccz, evaluation_radius=evaluation_radius)
+    kernel.set_measurements(positions_x, positions_y, concentrations, wind_speeds, wind_directions, timestamps)
+    # kernel.calculate_maps()
+
+    return kernel
+
+
+#######################
+# Update the Kernel
+#######################
+
+def update_kernel(kernel, new_x, new_y, new_conc, new_wspeed, new_wdir, new_timestamp):
+    # Push the new measurements and recalculate the maps
+    kernel.measurement_positions_x = np.append(kernel.measurement_positions_x, new_x)
+    kernel.measurement_positions_y = np.append(kernel.measurement_positions_y, new_y)
+    kernel.measurement_concentrations = np.append(kernel.measurement_concentrations, new_conc)
+    kernel.measurement_wind_speeds = np.append(kernel.measurement_wind_speeds, new_wspeed)
+    kernel.measurement_wind_directions = np.append(kernel.measurement_wind_directions, new_wdir)
+    kernel.measurement_timestamps= np.append(kernel.measurement_timestamps, new_timestamp)
+    kernel.calculate_maps()
+
+
+#######################
+# Plot the initial map
+#######################
+
+def init_map():
+    # Initiate interactive mode
+    plt.ion()
+
+    # Create Figure and axes
+    fig, axarray = plt.subplots()
+
+    axarray.clear()
+    axarray.set_title("Map")
+    cs = axarray.contourf(np.zeros((2, 2)), np.zeros((2, 2)), np.zeros((2, 2)))
+    fig.colorbar(cs)
+
+    # Now that the colorbar has its own axes we can get the new axis list and return it.
+    axarray = fig.get_axes()
+
+    return axarray
+
+
+#######################
+# Draw kernel maps:
+#######################
+
+
+def draw_kernel_maps(kernel, fig = None, axarray = None, with_imshow=False):
+
+    if fig == None:
+
+        fig, axarray = plt.subplots(3, 2)
+
+
+
+    xlin = np.arange(kernel.min_x, kernel.max_x, kernel.cell_size)
+    ylin = np.arange(kernel.min_y, kernel.max_y, kernel.cell_size)
+
+    for ax in axarray.flatten():
+        ax.clear()
+
+
+    axarray[0][0].set_title("Kernel Mean Map [ppm]")
+    axarray[1][0].set_title("Kernel Variance Map [ppm]")
+    axarray[2][0].set_title("Kernel Confidence Map. Range: 0-1")
+
+    # Draw Mean Map
+    cs00 = axarray[0, 0].contourf(xlin, ylin, kernel.mean_map.T)
+    cs00.autoscale()
+
+    # Draw Variance Map
+    cs10 = axarray[1, 0].contourf(xlin, ylin, kernel.variance_map.T)
+
+    # Draw Confidence Map
+    axarray[2][0].set_title("Kernel Confidence Map. Range: 0-1")
+    cs20 = axarray[2, 0].contourf(xlin, ylin, kernel.confidence_map.T)
+
+    if with_imshow == True:
+        cs01 = axarray[0][1].imshow(kernel.mean_map.T, interpolation='none', origin='lower')
+        cs11 = axarray[1][1].imshow(kernel.variance_map.T, interpolation='none', origin='lower')
+        cs21 = axarray[2][1].imshow(kernel.confidence_map.T, interpolation='none', origin='lower')
+        plt.colorbar(cs01, ax=axarray[0][1])
+        plt.colorbar(cs11, ax=axarray[1][1])
+        plt.colorbar(cs21, ax=axarray[2][1])
+
+
+    # Plot colorbar
+
+    cb1 = plt.colorbar(cs00, ax=axarray[0][0])
+    cb2 = plt.colorbar(cs10, ax=axarray[1][0])
+    cb3 = plt.colorbar(cs20, ax=axarray[2][0])
+
+
+    plt.pause(0.000001)
+
+    return fig, axarray
+
+
+#######################
+# Plot map:
+#######################
+
+def plot_map(kernel, map, string = str(), fig = None, axarray = None):
+
+    xlin = np.arange(kernel.min_x, kernel.max_x, kernel.cell_size)
+    ylin = np.arange(kernel.min_y, kernel.max_y, kernel.cell_size)
+
+    if fig == None:
+        fig, axarray = plt.subplots(2, 1)
+    else:
+        axarray[0].clear()
+        axarray[1].clear()
+
+    # Draw Contour Plot
+    axarray[0].set_title(string + "Contour Plot")
+    axarray[0].set_xlabel('x (m)')
+    axarray[0].set_ylabel('y (m)')
+    cs = axarray[0].contourf(xlin, ylin, map.T)
+
+    # Draw Cell Plot
+    axarray[1].set_title(string + "Grid Cell Plot")
+    axarray[1].imshow(map.T, interpolation='none', origin='lower')
+
+    # Plot colorbar
+    fig.subplots_adjust(right=0.8)
+    cbar_ax = fig.add_axes([0.83, 0.15, 0.02, 0.7])
+    fig.colorbar(cs, cax=cbar_ax, spacing='proportional')
+    # plt.tight_layout(rect=[0, 0, 0.75, 1])
+    plt.subplots_adjust(hspace= 0.4)
+    plt.pause(0.000001)
+
+    return fig, axarray
+
+#######################
+# Plot pathplanning maps:
+#######################
+l=True
+def plot_map_ipp(lvl_sizes, cell_history, planner_info_array, fig = None, axarray = None):
+
+    maps = planner_info_array[0]
+    curr_cell_array = planner_info_array[1]
+    max_path_array = planner_info_array[2]
+
+    if fig == None:
+        fig, axarray = plt.subplots(lvl_sizes.size + 1, 1)
+        axarray[0].set_title("Path Planning (Utility map [+])")
+        # plt.tight_layout()
+
+
+
+    for lvl in range(0, lvl_sizes.size + 1):
+
+        if cell_history == [] or len(cell_history[0]) == 1:
+            cell_history.append([[curr_cell_array[lvl].x, curr_cell_array[lvl].y]])
+        else:
+            cell_history[lvl].append([curr_cell_array[lvl].x, curr_cell_array[lvl].y])
+
+        # Plot imshow()
+        axarray[lvl].clear()
+        im = axarray[lvl].imshow(maps[lvl].T, interpolation='none', origin='lower')
+        x_lim, y_lim = axarray[lvl].get_xlim(), axarray[lvl].get_ylim()
+
+        # Plot scatter
+        axarray[lvl].scatter([row[0] for row in cell_history[lvl]], [row[1] for row in cell_history[lvl]], marker='+')
+        max_path_x = ipp.getList2Array(max_path_array[lvl])[:, 0]
+        max_path_y = ipp.getList2Array(max_path_array[lvl])[:, 1]
+        a = 10
+        axarray[lvl].scatter(max_path_x, max_path_y, s=[10 * a, 7 * a, 5 * a, 3 * a, 2 * a, 1 * a], marker='o', c='r')
+        axarray[lvl].scatter(curr_cell_array[lvl].x, curr_cell_array[lvl].y, s=5 * 15, c='g', marker='*')
+
+        axarray[lvl].set_xlim(x_lim), axarray[lvl].set_ylim(y_lim)
+
+        axarray[0].set_title("Path Planning (Utility map [+])")
+
+        # Plot colorbar
+        fig.subplots_adjust(bottom=0.1)
+        cbar_ax = fig.add_axes([0.15, 0.05, 0.7, 0.02])
+        global l
+        if l:
+            l=False
+            # plt.colorbar(vmin=0, vmax = 1, ticks= [0,1])
+            fig.colorbar(im, cax=cbar_ax, orientation='horizontal', ticks=ticker.LinearLocator(numticks=2), spacing='proportional' ) # , spacing='proportional'  ticks=ticker.MaxNLocator(nbins=1),
+            cbar_ax.set_xticklabels(['Low', 'High'])
+            # plt.tight_layout(rect=[0, 0.2, 1, 1])
+            # plt.tight_layout()
+
+        # plt.pause(0.00000001)
+
+
+    return fig, axarray
+
+
+#######################
+# Update the map
+#######################
+
+
+def update_map(axarray, kernel, map_type):
+    # Clear the current axes and colorbar. Get the pointers first to redraw them.
+    # markers=axarray[0].get_lines()
+    axarray[0].clear()
+
+    # Redraw the plot
+    x = kernel.cell_grid_x
+    y = kernel.cell_grid_y
+    if map_type == 'mean':
+        cs = axarray[0].contourf(x, y, kernel.mean_map)
+        axarray[0].set_title("Mean map")
+    elif map_type == 'confidence':
+        cs = axarray[0].contourf(x, y, kernel.confidence_map)
+        axarray[0].set_title("Confidence map")
+    elif map_type == 'variance':
+        cs = axarray[0].contourf(x, y, kernel.variance_map)
+        axarray[0].set_title("Variance map")
+    else:
+        raise NameError('Map type for update_map() is incorrect')
+
+    # Redraw the markers
+    # for marker in markers:
+    #     axarray[0].add_line(marker)
+
+    # Redraw the colorbar and add the new marker
+    plt.colorbar(cs, cax=axarray[1])
+    axarray[0].scatter(kernel.measurement_positions_x, kernel.measurement_positions_y, marker='y')
+
+    # plt.ion()
+    # plt.draw()
+    # plt.show()
+    plt.pause(0.00001)
+
+
+######################################################
+# Position to Cell index and Cell index to Pos
+######################################################
+
+# Returns the cell location (y, x) when given a coordinate position x, y.
+def pos2cell(curr_pos, kernel):
+
+    min_x = kernel.min_x
+    min_y = kernel.min_y
+    max_x = kernel.max_x
+    max_y = kernel.max_y
+    cell_size = kernel.cell_size
+
+    cell_x = np.floor(np.interp(curr_pos[0], [0, max_x - min_x], [0, (max_x - min_x) / cell_size]))
+    cell_y = np.floor(np.interp(curr_pos[1], [0, max_y - min_y], [0, (max_y - min_y) / cell_size]))
+
+    if cell_x >= ((max_x - min_x) / cell_size):
+        cell_x = ((max_x - min_x) / cell_size) - 1
+    if cell_y >= ((max_y - min_y) / cell_size):
+        cell_y = ((max_y - min_y) / cell_size) - 1
+
+    cell = [int(cell_x), int(cell_y)]
+
+    return cell
+
+def cell2pos(cell_pos, kernel):
+
+    min_x = kernel.min_x
+    min_y = kernel.min_y
+    cell_size = kernel.cell_size
+
+    pos = [0,0]
+    pos[0] = min_x + cell_pos[0]*cell_size
+    pos[1] = min_y + cell_pos[1]*cell_size
+
+    return pos
+
+
+#######################
+# Main
+#######################
+class IPP_PathPlanner(object):
+
+    def __init__(self):
+
+        self.kernel = None
+        self.utility = None
+
+        # Current navdata for the drone
+        self.pos_x = 0
+        self.pos_y = 0
+        self.pos_z = 0
+        self.yaw = 0
+
+         # Desired altitude and yaw
+        self.set_z = 2.5
+        self.set_yaw = 0
+        self.ENU_setpoint = Joy()
+        self.ENU_setpoint.header.frame_id = 'ground_ENU'
+
+        # Current cell coordinates
+        self.cx = 0
+        self.cy = 0
+
+        # Next position coordinates
+        self.next_x = 0
+        self.next_y = 0
+
+        self.wspeed = 2
+        self.wdir = 0
+
+        ## Publishers
+        self.pub_rate = rospy.Rate(0.33) #rospy.Rate(1/2.155)  # 10hz
+
+        self.pub_setpoint = rospy.Publisher("/pathplanner_cmd", Joy, queue_size=10)
+        self.pub_task_control = rospy.Publisher("/OmarTest", Float64MultiArray, queue_size=1)
+
+        ## Initiate the subscribers
+        self.sub_position = rospy.Subscriber("/dji_sdk/local_position", PointStamped, self.position_callback,
+                                             queue_size=1)
+
+        self.sub_sensors = rospy.Subscriber("/sensors", Float64, self.sensors_callback,
+                                             queue_size=1)
+        self.sub_plot_clock = rospy.Subscriber("/plot_clock", Empty, self.plot_clock_callback,
+                                             queue_size=-1)
+
+
+        # For the pathplanning algorithm:
+        self.level_sizes = np.array([5, 2])
+        # self.level_sizes = np.array([5, 5, 2, 2])
+
+        # Drawing
+        # FIgure axes for kernel drawing
+        self.fig_e = None
+        self.ax_c = None
+        self.fig_a = None
+        self.ax_a = None
+        self.fig_b = None
+        self.ax_b = None
+
+        # FIgure axes for planner.
+        self.cell_history = []
+        self.fig_planner = None
+        self.axarray_planner = None
+        self.planner_info_array = None
+
+
+        # Others
+        self.flag = False
+
+
+    def position_callback(self, msg):
+        # Get the position of the drone
+
+        self.pos_x = msg.point.x
+        self.pos_y = msg.point.y
+        self.pos_z = msg.point.z
+        aux = pos2cell([self.pos_x, self.pos_y], self.kernel)
+        self.cx = aux[0]
+        self.cy = aux[1]
+
+    def sensors_callback(self,msg):
+
+        rospy.loginfo("New sensor reading")
+
+        try:
+
+            rospy.loginfo("New sensor reading")
+
+            new_x = self.pos_x
+            new_y = self.pos_y
+            new_conc = msg.data
+            new_wspeed = self.wspeed
+            new_wdir = self.wdir
+            new_timestamp =  0
+
+            update_kernel(self.kernel, new_x, new_y, new_conc, new_wspeed, new_wdir, new_timestamp)
+
+            rospy.loginfo("Just updated the kernel with, x: " + str(self.pos_x) + ", y:"
+                          + str(self.pos_y) + ", Conc:" + str(new_conc))
+            self.flag = True
+
+        except:
+            pass
+
+    def plot_clock_callback(self, msg):
+        '''
+        This callback is just used to update the drawings. It is called in a subscriber callback since rospy creates a
+        separate thread for each subscriber thus allowing it to not slow down the actual path planner.
+
+        :return:
+        '''
+        ## TODO: Get this in another callback function so it does not interfeer
+        try:
+
+            if self.flag:
+
+                # Fig
+                self.fig_e, self.ax_c = plot_map(self.kernel, self.kernel.mean_map, "Mean [ppm] ", self.fig_e, self.ax_c)
+
+                x_lim, y_lim = self.ax_c[0].get_xlim(), self.ax_c[0].get_ylim()
+                self.ax_c[0].scatter(self.kernel.measurement_positions_x, self.kernel.measurement_positions_y,
+                                     marker='^')
+                # self.ax_c[0].scatter(4.3,3.7, s= 90,marker='s', c='r')  # Gas source marker
+                self.ax_c[0].scatter(self.kernel.measurement_positions_x [-1], self.kernel.measurement_positions_y[-1], s=8 * 15, c='g', marker='*')
+                self.ax_c[0].set_xlim(x_lim)
+                self.ax_c[0].set_ylim(y_lim)
+
+                # Fig
+                self.fig_a, self.ax_a = plot_map(self.kernel, self.kernel.confidence_map * 100, "Confidence map [%]",
+                                                 self.fig_a,
+                                                 self.ax_a)
+
+                x_lim, y_lim = self.ax_a[0].get_xlim(), self.ax_a[0].get_ylim()
+                self.ax_a[0].scatter(self.kernel.measurement_positions_x, self.kernel.measurement_positions_y,
+                                     marker='^')
+                # self.ax_a[0].scatter(4.3,3.7, s= 90,marker='s', c='r') # Gas source marker
+                self.ax_a[0].scatter(self.kernel.measurement_positions_x[-1], self.kernel.measurement_positions_y[-1],
+                                     s=8 * 15, c='g', marker='*')
+                self.ax_a[0].set_xlim(x_lim)
+                self.ax_a[0].set_ylim(y_lim)
+
+                # # Fig
+                # self.fig_b, self.ax_b = plot_map(self.kernel, self.kernel.variance_map, "Variance  [ppm] ", self.fig_b,
+                #                                  self.ax_b)
+                # self.ax_b[0].scatter(self.kernel.measurement_positions_x, self.kernel.measurement_positions_y,
+                #                      marker='^')
+                # self.ax_b[0].scatter(4.3,3.7, s= 70,marker='*')
+
+                plt.pause(0.00001)
+
+                self.fig_planner, self.axarray_planner = plot_map_ipp(self.level_sizes, self.cell_history,
+                                                                      self.planner_info_array, self.fig_planner,
+                                                                      self.axarray_planner)
+        except:
+            pass
+
+
+
+    def start(self):
+
+        rospy.loginfo("Starting the ipp pathplanner node")
+
+        # Start an instance of the Kernek DM-V
+        self.kernel = start_kernel(min_x=0., min_y=0., max_x=20., max_y=15., cell_size=0.5, kernel_size=2, wind_scale=1,
+                     time_scale=0, confidence_scale=1,
+                     lccz=True, evaluation_radius=5)
+
+        # Global pointer to the kernel to save the object when killing the program
+        global kernel_pointer
+        kernel_pointer  = self.kernel
+
+        # Entropy of a Normal Distribution: 1/2 * log(2*pi*e*sigma²) = cte+log(sigma²)
+        cte = 0.5 * np.log(2 * np.pi * np.e)
+
+        hist = np.array([[0, 0],[0, 0]])
+
+        # Wait until the first measurement is taken.
+        rospy.loginfo("Waiting for a sensor reading")
+        while(not self.flag):
+            pass
+
+
+        raw_input("Press enter to start pathplanning")
+
+        while not rospy.is_shutdown():
+
+            # Calculate the maps
+           self.utility = (self.kernel.mean_map/np.nanmax(self.kernel.mean_map)) + 3*(1-self.kernel.confidence_map)
+
+
+
+
+            ###### PLANNING: Get the next surrounding cell with maximum value of the passed map.
+
+            next_cell, self.planner_info_array = ipp.stack_planner(self.utility,ipp.coord(self.cx,self.cy),self.level_sizes)
+
+
+            # Keep track of the visited cells.
+            hist = np.append(hist, [next_cell.getArray()], 0)
+
+
+            # Send command to drone
+            aux = cell2pos(next_cell.getArray(), self.kernel)
+            self.next_x = aux[0]
+            self.next_y = aux[1]
+
+            self.ENU_setpoint.axes = [self.next_x, self.next_y, self.set_z,
+                                      self.set_yaw]  # X, Y position offset, Z position (height) and yaw angle in ENU
+            self.pub_setpoint.publish(self.ENU_setpoint)
+
+            # rospy.loginfo("Next waypoint x:" + str(self.next_x) + ", y:" + str(self.next_y) + ", z:" + str(self.set_z))
+
+            self.pub_rate.sleep()
+
+
+
+if __name__ == '__main__':
+
+    try:
+
+        rospy.init_node('ipp_path_planner', anonymous=True)
+        node = IPP_PathPlanner()
+        node.start()
+
+    except rospy.ROSInterruptException:
+        pass
+
+
+
+### Dealing with exit and saving the results
+import atexit
+from datetime import datetime
+
+def savestuff():
+    print 'Saving this test in: include/gdm_pack/' + datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    path = '/home/omar/PycharmProjects/gdm/src/gdm_pack/include/gdm_pack/' + datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    np.savez_compressed(path, kernel_pointer.measurement_positions_x, kernel_pointer.measurement_positions_y, kernel_pointer.measurement_concentrations,
+                        kernel_pointer.measurement_wind_speeds, kernel_pointer.measurement_wind_directions, kernel_pointer.measurement_timestamps,
+                        kernel_pointer.mean_map, kernel_pointer. variance_map, kernel_pointer.confidence_map)
+
+
+atexit.register(savestuff)

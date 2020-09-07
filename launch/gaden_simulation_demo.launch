@@ -1,0 +1,56 @@
+<launch>
+
+    <arg name="FixedFrame" default="/map" />
+
+    <!--
+      -->
+    ### NODE environment (for RVIZ visualization) ###
+    <node pkg="gaden_environment" type="environment" name="environment" output="screen">
+        <param name="/fixed_frame" value="$(arg FixedFrame)"/>
+
+        # Plot source positions
+        <param name="/number_of_sources" value="1"/>
+        <param name="/source_0_position_x" value="4.3"/>
+        <param name="/source_0_position_y" value="3.7"/>
+        <param name="/source_0_position_z" value="3"/>
+
+
+        # CAD
+        <param name="/occupancy3D_data" value="$(find gaden_demo)/omardemo/OccupancyGrid3D.csv"/>
+        <param name="/number_of_CAD" value="1"/>
+        <param name="/CAD_0" value="package://gaden_demo/omardemo/orchard_s.dae"/>
+
+    </node>
+
+
+    ### NODE PLAYER ###
+    #
+    <node pkg="gaden_player" type="gaden_player" name="gaden_player" output="screen">
+        <param name="/verbose" value="false" />
+        <param name="/player_freq" value="10" />        ###(Hz) Freq for loading the simulation log_files
+        <param name="/num_simulators" value="1" />      ### Number of simulations to load [1-inf] (useful for multiple sources and gases)
+
+        # Data from the "filament_simulator" pkg
+        # Multiple sources can be set here
+        <param name="/simulation_data_0" value="$(find gaden_demo)/omardemo/logs_gas_dipersion_simulator/FilamentSimulation_gasType_0_sourcePosition_4.30_3.70_3.00_iteration_" />
+        #param name="/simulation_data_0" value="$(find gaden_demo)/omardemo/logs_gas_dipersion_simulator/FilamentSimulation_gasType_1_sourcePosition_4.30_3.70_1.00_iteration_" />
+    </node>
+
+    ### RVIZ ###
+    <param name="robot_description" textfile="$(find gaden_demo)/omardemo/bebop.urdf" />
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find gaden_demo)/demo/gaden_filament_simulator.rviz"/>
+
+
+
+    ### Simulate Gaden Readings ###
+    <node pkg="gdm_pack" type="simulate_gaden_readings" name="gaden_readings" output="screen" />
+
+    ### ipp_pathplanner ###
+    <node pkg="gdm_pack" type="ipp_pathplanner" name="ipp_pathplanner" output="screen" />
+
+    ### Rostopic pub calls for the first sensor reading and the plot clock
+    <node pkg="rostopic" type="rostopic" name="sensor_reading" args='pub /sensors std_msgs/Float64 "data: 0.0001"'/>
+    <arg name="node_start_delay" default="1.0" />
+    <node pkg="rostopic" type="rostopic" name="plot_clock" args='pub -r 2 /plot_clock std_msgs/Empty "{}"' launch-prefix="bash -c 'sleep $(arg node_start_delay); $0 $@' "/>
+
+</launch>

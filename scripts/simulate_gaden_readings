@@ -1,0 +1,128 @@
+#!/usr/bin/env python
+
+###
+# This node acts as an interface to simulate the dji_sdk/local_position topic from dji from the read commands from the
+# topic /pathplanner_cmd.
+# It simulates the readings of the sensors from the data from gaden.
+# It visualises the position of the drone in rviz.
+
+
+
+import rospy
+
+from sensor_msgs.msg import Joy
+from std_msgs.msg import Int64, Empty, Float64MultiArray, Float64
+from geometry_msgs.msg import PointStamped, TransformStamped
+from gaden_player.srv import GasPosition, GasPositionResponse
+
+import tf2_ros
+import tf_conversions
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+class simulate_gaden_readings(object):
+
+    def __init__(self):
+
+        # Params
+        self.a= 1
+        self.pathplanner_cmd = PointStamped()
+
+
+
+
+        ## Publishers
+        self.pub_rate = rospy.Rate(1) #rospy.Rate(1 / 2.155)  # 10hz
+        self.pub_dji_local_position = rospy.Publisher("/dji_sdk/local_position", PointStamped, queue_size=1)
+        self.pub_sensors = rospy.Publisher("/sensors", Float64, queue_size=1)
+
+        ## Initiate the subscribers
+        self.sub_position = rospy.Subscriber("/pathplanner_cmd", Joy, self.position_callback,
+                                             queue_size=1)
+
+        ## Create service proxies
+        self.srv_get_odor_value = rospy.ServiceProxy('/odor_value', GasPosition)
+
+        ## Create tf broadcaster
+        self.tf_br = tf2_ros.TransformBroadcaster()
+
+    def position_callback(self,msg):
+
+        self.pathplanner_cmd.point.x = msg.axes[0]
+        self.pathplanner_cmd.point.y = msg.axes[1]
+        self.pathplanner_cmd.point.z = msg.axes[2]
+        self.pub_dji_local_position.publish(self.pathplanner_cmd)
+
+        # Creating TransformStamped
+        t = TransformStamped()
+        t.header.stamp = rospy.Time.now()
+        t.header.frame_id = "map"
+        t.child_frame_id = 'base_link'
+        t.transform.translation.x = self.pathplanner_cmd.point.x
+        t.transform.translation.y = self.pathplanner_cmd.point.y
+        t.transform.translation.z = self.pathplanner_cmd.point.z
+        q = tf_conversions.transformations.quaternion_from_euler(0, 0, 0)
+        t.transform.rotation.x = q[0]
+        t.transform.rotation.y = q[1]
+        t.transform.rotation.z = q[2]
+        t.transform.rotation.w = q[3]
+
+        self.tf_br.sendTransform(t)
+
+
+
+
+
+
+    def start(self):
+
+        rospy.loginfo("Starting the simulate_gaden_readings node")
+
+        # # Load ground truth model from Gaden.
+        # path = '/home/omar/PycharmProjects/gdm/src/gdm_pack/include/Conc1.npy'
+        # conc = np.load(path)
+        # plt.ion()
+        # im=plt.imshow(conc.T, interpolation='none', origin='lower')
+        # plt.colorbar(im)
+        # plt.title('Ground truth [ppm]')
+        # plt.pause(0.0000000001)
+
+        while not rospy.is_shutdown():
+
+            try:
+
+                # print 'Calling:' + str(self.pathplanner_cmd.point.x) + str(self.pathplanner_cmd.point.y) + str(self.pathplanner_cmd.point.z)
+
+                self.gas_concentration_response = self.srv_get_odor_value(self.pathplanner_cmd.point.x,
+                                                             self.pathplanner_cmd.point.y,
+                                                             self.pathplanner_cmd.point.z)
+
+                # Returns -1 if the gas location was wrong.
+                # print 'Publishing' + str(self.gas_concentration_response.gas_conc[0])
+                if(self.gas_concentration_response.gas_conc[0] >= 0.0):
+
+                    self.pub_sensors.publish(self.gas_concentration_response.gas_conc[0])
+
+            except:
+                pass
+                rospy.loginfo("Can not read concentrations from Gaden Player. Please check if it is running and if the /odor_value srv is available.")
+
+
+            # rospy.spin()
+            self.pub_rate.sleep()
+
+
+
+
+if __name__ == '__main__':
+
+    try:
+
+        rospy.init_node('simulate_gaden_readings_node', anonymous=True)
+        plotter_node = simulate_gaden_readings()
+        plotter_node.start()
+
+    except rospy.ROSInterruptException:
+        pass

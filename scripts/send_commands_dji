@@ -1,0 +1,211 @@
+#!/usr/bin/env python
+
+###
+# Small cmd interface node that enables control of the drone through cmd line. It allows authority requests and local setpoints and reference frames.
+
+
+
+import rospy
+import numpy as np
+from sensor_msgs.msg import Joy
+from dji_sdk.srv import DroneTaskControl, SDKControlAuthority, MissionWpAction, SetLocalPosRef, \
+    MissionWpGetInfo, MissionWpGetSpeed, MissionWpSetSpeed, MissionWpUpload
+from geometry_msgs.msg import PointStamped
+
+
+class send_commands_dji(object):
+
+    def __init__(self):
+
+        # Params
+
+        self.pos_x = 0
+        self.pos_y = 0
+        self.pos_z = 0
+
+        self.threshold_pos = 0.2 # Error threshold to reach a destination in meters
+        self.threshold_alt = 0.2  # Error threshold to reach an altitude in meters
+
+
+        self.pathplanner_cmd = Joy()
+
+        self.pathplanner_cmd.header.frame_id = 'ground_ENU'
+
+        ## Initiate the subscribers
+        self.sub_position = rospy.Subscriber("/dji_sdk/local_position", PointStamped, self.position_callback,
+                                             queue_size=1)
+
+
+        ## Publishers
+        self.pub_rate = rospy.Rate(5)
+        self.pub_setpoint = rospy.Publisher("/dji_sdk/flight_control_setpoint_ENUposition_yaw", Joy, queue_size=10)
+
+
+        self.srv_DroneTaskControl = rospy.ServiceProxy('/dji_sdk/drone_task_control',
+                                                       DroneTaskControl)  # Request: uint8 task	4--takeoff	6--landing	1--gohome
+        self.srv_SDKControlAuthority = rospy.ServiceProxy('/dji_sdk/sdk_control_authority',
+                                                          SDKControlAuthority)  # Request: 1--request control	0--release control
+        self.srv_SetLocalPosRef = rospy.ServiceProxy('/dji_sdk/set_local_pos_ref',
+                                                     SetLocalPosRef)  # Request: Empty: Set the origin of the local position to be the current GPS coordinate
+
+
+
+    def position_callback(self, msg):
+
+        # Get the position of the drone
+
+        self.pos_x = msg.point.x
+        self.pos_y = msg.point.y
+        self.pos_z = msg.point.z
+
+    def start(self):
+
+        while not rospy.is_shutdown():
+
+            print 'Select what you want to do\n'
+
+            print '1. Request control authority\n'
+            print '2. Set Local Position of Reference\n'
+            print '3. Take Off\n'
+            print '4. Land\n'
+            print '5. Return Home\n'
+            print '6. Send position commands\n'
+            print '7. Send x-y commands\n'
+            print '8. Send altitude commands\n'
+            sel = 0
+            try:
+                sel = int(raw_input("Selection: "))
+            except: pass
+
+            if sel == 1:
+
+                flag = self.srv_SDKControlAuthority(1)  # Request: 1--request control	0--release control
+                rospy.wait_for_service('/dji_sdk/sdk_control_authority', timeout=10)
+                if flag.result == True: print 'Succesfully obtained control authority '
+                else:
+                    print 'Failed to obtain control authority'
+
+            elif sel == 2:
+
+
+                flag = self.srv_SetLocalPosRef()  # Request: Empty: Set the origin of the local position to be the current GPS coordinate
+                rospy.wait_for_service('/dji_sdk/set_local_pos_ref', timeout=10)
+
+                if flag.result == True:
+                    print 'Succesfully Set Local Position of Reference\n'
+                else:
+                    print 'Failed to Set Local Position of Reference\n'
+
+            elif sel == 3 or sel == 4 or sel == 5:
+
+                dict = {3: 4, # Take off
+                        4: 6, # Land
+                        5: 1} # Return Home
+
+                flag = self.srv_DroneTaskControl(dict[sel])  # Request: uint8 task	4--takeoff	6--landing	1--gohome
+                rospy.wait_for_service('/dji_sdk/drone_task_control', timeout=10)
+
+                if flag.result == True:
+                    print 'Succesfully sent command.\n'
+                else:
+                    print 'Failed to send command\n'
+
+            elif sel == 6:
+
+                try:
+
+                    string = raw_input("Input your desired position between spaces as: x y z yaw \n")
+                    axes = [float(x.strip()) for x in string.split(' ')]
+
+                    print axes
+
+                    while True:
+                        self.pathplanner_cmd.axes = [axes[0]-self.pos_x, axes[1]-self.pos_y, axes[2], axes[3] ]
+                        self.pub_setpoint.publish(self.pathplanner_cmd)
+                        #print self.pos_x, self.pos_y, self.pos_z
+                        pstr = 'You are close! Only ' + str(np.linalg.norm(self.pathplanner_cmd.axes[0:2])+ axes[2]- self.pos_z)
+                        print pstr
+
+                        if  (np.linalg.norm(self.pathplanner_cmd.axes[0:2]) + np.absolute(axes[2]-self.pos_z)) < self.threshold_pos:
+                            print 'You got there!'
+                            break
+
+                        self.pub_rate.sleep()
+                except:
+                    print 'Wrong input!'
+
+            elif sel == 7:
+
+                try:
+
+                    string = raw_input("Input your desired position between spaces as: x y \n")
+                    axes = [float(x.strip()) for x in string.split(' ')]
+
+                    print axes
+
+                    while True:
+                        self.pathplanner_cmd.axes = [axes[0]-self.pos_x, axes[1]-self.pos_y, self.pos_z, 0 ]
+                        self.pub_setpoint.publish(self.pathplanner_cmd)
+                        #print self.pos_x, self.pos_y, self.pos_z
+                        pstr = 'You are close! Only ' + str(np.linalg.norm(self.pathplanner_cmd.axes[0:2]))
+                        print pstr
+                        if  np.linalg.norm(self.pathplanner_cmd.axes[0:2]) < self.threshold_pos:
+                            print 'You got there!'
+                            break
+
+                        self.pub_rate.sleep()
+                except:
+                    print 'Wrong input!'
+
+
+            elif sel == 8:
+
+                try:
+
+                    string = raw_input("Input your desired position as:  z \n")
+                    axes = [float(x.strip()) for x in string.split(' ')]
+
+                    print axes
+
+                    while True:
+                        alt_cmd = axes[0]
+                        self.pathplanner_cmd.axes = [self.pos_x, self.pos_y, alt_cmd, 0 ]
+                        self.pub_setpoint.publish(self.pathplanner_cmd)
+                        #print self.pos_x, self.pos_y, self.pos_z
+                        pstr = 'You are close! Only ' + str(np.absolute(self.pos_z - alt_cmd))
+                        print pstr
+
+
+                        # To not get stuck in here because the PID gains are too low:
+
+                        error = np.absolute(self.pos_z-alt_cmd)
+                        # If below alt_cmd
+                        if (self.pos_z > alt_cmd) & (error < self.threshold_alt*3):
+                            alt_cmd += 0.01
+
+                        # If above alt_cmd
+                        if (self.pos_z < alt_cmd) & (error < self.threshold_alt*3):
+                            alt_cmd -= 0.01
+
+                        if  np.absolute(self.pos_z-alt_cmd) < self.threshold_alt:
+                            print 'You got there!'
+                            break
+
+                        self.pub_rate.sleep()
+                except:
+                    print 'Wrong input!'
+
+
+            else:
+                pass
+
+if __name__ == '__main__':
+
+    try:
+
+        rospy.init_node('send_commands_dji_node', anonymous=True)
+        plotter_node = send_commands_dji()
+        plotter_node.start()
+
+    except rospy.ROSInterruptException:
+        pass

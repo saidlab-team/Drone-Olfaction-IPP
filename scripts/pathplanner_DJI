@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+
+# This node uses DJI's Onboard SDK to control the postion of the drone. Depending on the pathplanner mode the drone will
+# fly to the commanded point via /pathplanner_cmd, or via the hardcoded Waypoint List in __init__()
+
+import rospy
+from rospy.numpy_msg import numpy_msg
+
+from std_msgs.msg import Int64, Empty, Float64MultiArray
+from geometry_msgs.msg import PointStamped
+import gdm_pack.kernel_drawing as gdm
+from sensor_msgs.msg import Joy
+from dji_sdk.msg import Waypoint, WaypointList
+from dji_sdk.srv import DroneTaskControl, SDKControlAuthority, MissionWpAction, SetLocalPosRef, \
+    MissionWpGetInfo, MissionWpGetSpeed, MissionWpSetSpeed, MissionWpUpload
+
+from rosgraph_msgs.msg import Clock
+import numpy as np
+
+
+class PathPlanner(object):
+
+    def __init__(self):
+
+        ## Params
+        self.WaypointList = [[5, 7, 10, 1]]
+        self.WaypointIndex = 0
+        self.error_threshold = 0.5 # Radius of the circle of acceptance around the desired waypoint.
+        self.pathplanner_mode = 1 # Pathplanner mode: 0 for waypoint navigation and 1 for point navigation.
+
+        # Current setpoint
+        self.set_x = 0
+        self.set_y = 0
+        self.set_z = 4.5
+        self.set_yaw = 0
+
+        # Current navdata for the drone
+        self.pos_x = 0
+        self.pos_y = 0
+        self.pos_z = 0
+        self.yaw = 0
+
+        # Variable published to the SDK to control the drone.
+        self.ENU_setpoint = Joy()
+        self.ENU_setpoint.header.frame_id = 'ground_ENU'
+        self.ENU_setpoint.axes = [10, 10, 5,
+                                  1]  # X, Y position offset, Z position (height) and yaw angle in ENU ground frame.
+
+        ## Publishers
+        self.pub_rate = rospy.Rate(10)  # 10hz
+        self.pub_setpoint = rospy.Publisher("/dji_sdk/flight_control_setpoint_ENUposition_yaw", Joy, queue_size=10)
+
+        ## Initiate the subscribers
+        self.sub_position = rospy.Subscriber("/dji_sdk/local_position", PointStamped, self.position_callback,
+                                             queue_size=1)
+        self.sub_setpoint = rospy.Subscriber("/pathplanner_cmd", Joy, self.setpoint_callback, queue_size=1)
+
+        ## Initiate the service proxies
+        # Control srv
+        self.srv_DroneTaskControl = rospy.ServiceProxy('/dji_sdk/drone_task_control',
+                                                       DroneTaskControl)  # Request: uint8 task	4--takeoff	6--landing	1--gohome
+        self.srv_SDKControlAuthority = rospy.ServiceProxy('/dji_sdk/sdk_control_authority',
+                                                          SDKControlAuthority)  # Request: 1--request control	0--release control
+        self.srv_SetLocalPosRef = rospy.ServiceProxy('/dji_sdk/set_local_pos_ref',
+                                                     SetLocalPosRef)  # Request: Empty: Set the origin of the local position to be the current GPS coordinate
+
+        # Waypoint srv
+
+        self.srv_MissionWpAction = rospy.ServiceProxy('path_planner',
+                                                      MissionWpAction)  # Request: 0--start	1--stop	2--pause	3--resume
+        self.srv_MissionWpGetInfo = rospy.ServiceProxy('path_planner',
+                                                       MissionWpGetInfo)  # Get the current waypoint tasks.
+        self.srv_MissionWpGetSpeed = rospy.ServiceProxy('path_planner',
+                                                        MissionWpGetSpeed)  # Return the waypoint velocity
+        self.srv_MissionWpSetSpeed = rospy.ServiceProxy('path_planner',
+                                                        MissionWpSetSpeed)  # Request: float32 speed. Set the waypoint velocity.
+        self.srv_MissionWpUpload = rospy.ServiceProxy('path_planner',
+                                                      MissionWpUpload)  # Request: MissionWaypointTask waypoint_task
+
+# Define callbacks for subscribers:
+
+    def position_callback(self, msg):
+
+        # Get the position of the drone from dji/local_position
+
+        self.pos_x = msg.point.x
+        self.pos_y = msg.point.y
+        self.pos_z = msg.point.z
+
+    def setpoint_callback(self, msg):
+
+        # Set the waypoint position.
+        self.set_x = msg.axes[0]
+        self.set_y = msg.axes[1]
+        self.set_z = msg.axes[2]
+        self.set_yaw = msg.axes[3]
+        rospy.loginfo("Just received a new command: Going to: x:" + str(self.set_x) + ", y:"
+                      + str(self.set_y) + ", z:" + str(self.set_z) + ", yaw:" + str(self.set_yaw))
+
+
+    def start(self):
+
+        rospy.loginfo("Starting the dji controller node")
+
+        flag = self.srv_SDKControlAuthority(1)  # Request: 1--request control	0--release control
+        rospy.wait_for_service('/dji_sdk/sdk_control_authority', timeout=None)
+
+        if flag.result == True:
+            rospy.loginfo('Request control has been successful!')
+            # self.srv_SetLocalPosRef()  # Request: Empty: Set the origin of the local position to be the current GPS coordinate
+            # rospy.wait_for_service('/dji_sdk/set_local_pos_ref', timeout=None)
+            # self.srv_DroneTaskControl(4)  # Request: uint8 task	4--takeoff	6--landing	1--gohome
+            # rospy.wait_for_service('/dji_sdk/drone_task_control', timeout=None)
+
+        while not rospy.is_shutdown():
+
+            if self.pathplanner_mode == 0:
+
+                xCmd = self.WaypointList[self.WaypointIndex][0] - self.pos_x
+                yCmd = self.WaypointList[self.WaypointIndex][1] - self.pos_y
+                zCmd = self.WaypointList[self.WaypointIndex][2]
+                target_yaw = self.WaypointList[self.WaypointIndex][3] - self.yaw
+
+                # Calculate the distance to the waypoint
+                Cmd_vector = np.array([xCmd, yCmd, zCmd])
+                d_error = np.sqrt(Cmd_vector.dot(Cmd_vector))
+
+                if d_error < self.error_threshold:
+                    self.WaypointIndex += self.WaypointIndex
+
+            else:
+
+                xCmd = self.set_x - self.pos_x
+                yCmd = self.set_y - self.pos_y
+                zCmd = self.set_z
+                target_yaw = self.set_yaw
+
+
+            self.ENU_setpoint.axes = [xCmd, yCmd, zCmd,
+                                      target_yaw]  # X, Y , Z position (height) and yaw angle in ENU ground frame.
+            self.pub_setpoint.publish(self.ENU_setpoint)
+
+            self.pub_rate.sleep()
+
+
+if __name__ == '__main__':
+
+    try:
+
+        rospy.init_node('path_planner', anonymous=True)
+        node = PathPlanner()
+        node.start()
+
+    except rospy.ROSInterruptException:
+        pass

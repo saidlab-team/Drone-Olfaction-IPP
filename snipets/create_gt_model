@@ -1,0 +1,63 @@
+#!/usr/bin/env python
+
+# Create a grid ground truth model from one of the output files from GADEN simulations. It saves the result three
+# numpy array file for the concentration wind and wind direction. Units are ppm, m/s and degrees by default.
+
+
+import numpy as np
+
+
+class gt_2D_model(object):
+
+    def __init__(self, Cells_x, Cells_y, Cells_z, path):
+
+
+        self.NumCellsXYZ = [Cells_x, Cells_y, Cells_z ]
+
+        self.Conc = np.zeros((Cells_x, Cells_y), dtype=float)
+        self.Wind = np.zeros((Cells_x, Cells_y), dtype=float)
+        self.WindDir = np.zeros((Cells_x, Cells_y), dtype=float)
+
+        self.file = open(path,'r')
+        fileiter = iter(self.file)
+
+        for i in range(7):
+            next(fileiter)
+
+        for line in fileiter:
+            cr = line.split()
+            cr = np.asfarray(cr, float)
+
+            if cr[2] == Cells_z:
+                currCellx = int(cr[0])
+                currCely = int(cr[1])
+                self.Conc[currCellx][currCely] = cr[3]
+
+                windvector = np.array([cr[4],cr[5]])
+                self.Wind[currCellx][currCely] = np.linalg.norm(windvector, axis=0)
+                angle = np.angle(cr[4] + cr[5]*1j, deg=True)
+                if angle < 0 : angle += 360
+                self.WindDir[currCellx][currCely] = angle
+
+
+
+if __name__ == '__main__':
+
+    path = '/home/omar/PycharmProjects/gdm/src/gdm_pack/include'
+    path = '/home/omar/Documents/Gaden/src/gaden_demo/demo/logs_gas_dipersion_simulator'
+
+    # gt_model = gt_2D_model(200, 166, 28, path + '/FilamentSimulation_gasType_1_sourcePosition_0.50_-1.00_1.00_iteration_58')
+    # gt_model = gt_2D_model(100, 110, 15, path +  '/FilamentSimulation_gasType_1_sourcePosition_-2.50_-3.00_1.00_iteration_45')
+    # gt_model = gt_2D_model(100, 110, 35,path + '/FilamentSimulation_gasType_0_sourcePosition_4.30_3.70_3.00_iteration_58')
+
+    for i in range(1):
+        gt_model = gt_2D_model(100, 110, 24,path + '/FilamentSimulation_gasType_1_sourcePosition_0.50_-1.00_1.00_iteration_58')
+        np.save(path + '/C55_24', gt_model.Conc)
+        np.save(path + '/Wind44', gt_model.Wind)
+        np.save(path + '/WindDir44', gt_model.WindDir)
+
+        import matplotlib.pyplot as plt
+        plt.imshow(gt_model.Conc)
+        plt.show()
+
+    raw_input('Press enter to exit')

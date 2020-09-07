@@ -1,0 +1,144 @@
+#!/usr/bin/env python
+
+# Create a grid ground truth model from one of the output files from GADEN simulations. It saves the result three
+# numpy array file for the concentration wind and wind direction. Units are ppm, m/s and degrees by default.
+
+import numpy as np
+import pandas
+import utm
+import re
+import matplotlib.pyplot as plt
+measurements_array = [[]]
+
+
+
+
+def dms2dd(degrees, minutes, seconds, direction):
+    dd = float(degrees) + float(minutes)/60 + float(seconds)/(60*60)
+    if direction == 'W' or direction == 'S':
+        dd *= -1
+    return dd
+
+def dd2dms(deg):
+    d = int(deg)
+    md = abs(deg - d) * 60
+    m = int(md)
+    sd = (md - m) * 60
+    return [d, m, sd]
+
+def parse_dms(dms):
+    parts = re.split('[^\d\w]+', dms)
+    lat = dms2dd(parts[0], parts[1], parts[2], parts[3])
+
+    return (lat)
+
+
+def get_dsm(lat):
+    deg = int(lat / 100)
+    min = int(((lat / 100) - deg) * 100)
+    sec = (lat - int(lat)) * 60
+    dsm = [deg, min, sec]
+    return dsm
+
+
+if __name__ == '__main__':
+
+    path = '/home/omar/PycharmProjects/gdm/src/gdm_pack/include/'
+    df = pandas.read_csv('/home/omar/Documents/Local_MDPI_template_Sensors/data/20_Jun/spiral/csv/1/RDsplit_spdf_spiral_1_1.csv', delimiter=',')
+
+
+    print(df)
+
+    i = 1
+    for k in df:
+
+        # Transform lat long to decimal and utm
+        if df.Latitude[i-1] < 10000:
+            lat = df.Latitude[i-1]
+        else: lat = df.Latitude[i-1]/1000
+        if df.Longitude[i-1] < 10000:
+            lon = df.Longitude[i-1]
+        else: lon = df.Longitude[i-1]/1000
+
+        dsmlat = get_dsm(lat)
+        dsmlon = get_dsm(lon)
+
+        lat = dms2dd(dsmlat[0], dsmlat[1], dsmlat[2], 'N')
+        lon = dms2dd(dsmlon[0], dsmlon[1], dsmlon[2], 'E')
+        easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
+
+        # Cast Altitude to a float.
+
+        alt = float(df.Altitude[i - 1].replace(',', '.'))
+
+        # index, Concentration, latitude, longitude, altitude, easting, northing, zone_number, zone_letter.
+        measurement = [i,
+                       df.Conc[i-1],
+                       lat,
+                       lon,
+                       alt,
+                       easting,
+                       northing,
+                       zone_number,
+                       zone_letter]
+
+        if i-1 == 0:
+            measurements_array[0] = measurement
+        else:
+            measurements_array.append(measurement)
+
+        i = i + 1
+
+    measurements_array = np.array(measurements_array)
+    index, Concentration, latitude, longitude, altitude, easting, northing, zone_number, zone_letter  = measurements_array.T
+
+    easting = np.array(easting, dtype= np.float64)
+    northing = np.array(northing, dtype=np.float64)
+    longitude = np.array(longitude, dtype=np.float64)
+    latitude = np.array(latitude, dtype=np.float64)
+
+    plt.plot(easting, northing)
+    plt.show()
+
+    # plt.plot(longitude, latitude)
+    # plt.show()
+
+
+
+
+
+
+
+    path = '/home/omar/PycharmProjects/gdm/src/gdm_pack/include/'
+    dfdji = pandas.read_csv(path + 'dji102417.csv', delimiter=';')
+
+    a=1
+
+    c=0
+    djilat = []
+    djilon = []
+    utm_dji = [[]]
+
+    for lat in dfdji.Latitude:
+
+        djilat.append(lat)
+        djilon.append(dfdji.Longitude[c])
+
+        utml = utm.from_latlon(lat, dfdji.Longitude[c])
+        utm_dji.append([utml[0],utml[1]])
+
+        c += 1
+
+    utm_dji.pop(0)
+
+    utm_dji = np.array(utm_dji)
+
+    x, y = utm_dji.T
+
+    plt.plot(x,y)
+    plt.show()
+
+
+
+
+    raw_input('Press enter to exit')

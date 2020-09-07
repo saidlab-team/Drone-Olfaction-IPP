@@ -1,0 +1,16 @@
+<launch>
+
+    <arg name="FixedFrame" default="/map" />
+    <arg name="node_start_delay" default="2.0" />
+    <arg name="node_start_delay_1" default="5.0" />
+
+    ### pathplanner_DJI ###
+
+    <node pkg="gdm_pack" type="send_commands_dji" name="send_commands_dji" output="screen" />
+
+    ### Rostopic pub calls for the first sensor reading and the plot clock
+
+    <node pkg="rostopic" type="rostopic" name="plot_clock" args='pub -r 2 /plot_clock std_msgs/Empty "{}"' launch-prefix="bash -c 'sleep $(arg node_start_delay_1); $0 $@' "/>
+
+
+</launch>
