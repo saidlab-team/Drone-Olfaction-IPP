@@ -113,6 +113,10 @@ This folder includes all nodes and other snippets of code.
 	Quick script to get the GPS coordinates of a spiral path. Inputs are gps coordinates of the origin, altitude/s, radius, step and decimation.
 
 
+# Video
+
+![](icuas265.mp4)
+
 # License
 
 Any work done using this code should reference the paper [An Adaptive Informative Path Planning Algorithm for Real-time Air Quality Monitoring Using UAVs](https://ieeexplore.ieee.org/document/9214013)
